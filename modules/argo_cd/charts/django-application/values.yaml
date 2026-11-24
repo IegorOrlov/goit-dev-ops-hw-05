@@ -1,0 +1,8 @@
+source:
+  repoURL: https://github.com/IegorOrlov/goit-dev-ops-hw-05.git
+  targetRevision: lesson-8-9
+  path: charts/django-app
+
+destination:
+  server: https://kubernetes.default.svc
+  namespace: django

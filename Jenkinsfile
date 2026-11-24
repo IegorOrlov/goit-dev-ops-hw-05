@@ -7,7 +7,7 @@ pipeline {
     }
 
     parameters {
-        string(name: 'GITOPS_BRANCH', defaultValue: 'main', trim: true,
+        string(name: 'GITOPS_BRANCH', defaultValue: 'lesson-8-9', trim: true,
                description: 'Гілка HW-05, яку відстежує Argo CD')
     }
 

@@ -32,3 +32,26 @@ variable "enable_jenkins" {
   type        = bool
   default     = false
 }
+
+variable "enable_argo_cd" {
+  description = "Встановити Argo CD після підготовки EKS"
+  type        = bool
+  default     = false
+}
+
+variable "enable_django_application" {
+  description = "Створити Application після публікації першого образу Jenkins і оновлення values.yaml у Git"
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_django_application || var.enable_argo_cd
+    error_message = "Для Django Application встановіть enable_argo_cd=true."
+  }
+}
+
+variable "gitops_branch" {
+  description = "Цільова гілка HW-05, що має збігатися з GITOPS_BRANCH у Jenkinsfile"
+  type        = string
+  default     = "lesson-8-9"
+}

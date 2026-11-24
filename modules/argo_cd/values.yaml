@@ -1,0 +1,43 @@
+fullnameOverride: argocd
+
+crds:
+  install: true
+
+dex:
+  enabled: false
+applicationSet:
+  replicas: 0
+notifications:
+  enabled: false
+
+controller:
+  resources:
+    requests:
+      cpu: 150m
+      memory: 256Mi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 125m
+      memory: 192Mi
+
+server:
+  service:
+    type: ClusterIP
+  resources:
+    requests:
+      cpu: 75m
+      memory: 96Mi
+
+redis:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+redisSecretInit:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi

@@ -44,3 +44,12 @@ module "jenkins" {
 
   depends_on = [module.eks, module.ecr]
 }
+
+module "argo_cd" {
+  count                     = var.enable_argo_cd ? 1 : 0
+  source                    = "./modules/argo_cd"
+  enable_django_application = var.enable_django_application
+  gitops_branch             = var.gitops_branch
+
+  depends_on = [module.eks]
+}
