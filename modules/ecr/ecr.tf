@@ -6,7 +6,7 @@ resource "aws_ecr_repository" "main" {
   }
 }
 
-# Дозволяємо push і pull лише вказаному IAM principal
+# Дозволяємо push і pull адміністратору через repository policy.
 resource "aws_ecr_repository_policy" "main" {
   repository = aws_ecr_repository.main.name
   policy = jsonencode({

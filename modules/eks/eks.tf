@@ -96,7 +96,7 @@ resource "aws_iam_role_policy_attachment" "node" {
   policy_arn = "arn:aws:iam::aws:policy/${each.value}"
 }
 
-# Два t3.small забезпечують бюджет pods демо та сумісні з обмеженням Free Tier account.
+# Три t3.small забезпечують запас пам’яті для CI/CD і сумісні з обмеженням Free Tier account.
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "demo"
@@ -109,9 +109,9 @@ resource "aws_eks_node_group" "main" {
   disk_size       = 20
 
   scaling_config {
-    desired_size = 2
-    min_size     = 2
-    max_size     = 2
+    desired_size = 3
+    min_size     = 3
+    max_size     = 3
   }
 
   update_config {

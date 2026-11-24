@@ -30,6 +30,7 @@
       "Effect": "Allow",
       "Action": [
         "eks:DescribeCluster",
+        "eks:DescribeUpdate",
         "eks:DeleteCluster",
         "eks:CreateNodegroup",
         "eks:CreateAccessEntry",
@@ -46,6 +47,8 @@
       "Action": [
         "eks:DescribeNodegroup",
         "eks:DeleteNodegroup",
+        "eks:UpdateNodegroupConfig",
+        "eks:DescribeUpdate",
         "eks:ListTagsForResource",
         "eks:TagResource",
         "eks:UntagResource"

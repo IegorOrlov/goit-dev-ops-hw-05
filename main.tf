@@ -32,3 +32,14 @@ module "eks" {
   public_access_cidrs = var.public_access_cidrs
   depends_on          = [module.vpc]
 }
+
+module "jenkins" {
+  count                = var.enable_jenkins ? 1 : 0
+  source               = "./modules/jenkins"
+  cluster_name         = module.eks.cluster_name
+  oidc_provider_arn    = module.eks.oidc_provider_arn
+  oidc_provider_url    = module.eks.oidc_provider_url
+  agent_ecr_policy_arn = "arn:aws:iam::${module.eks.account_id}:policy/${module.eks.cluster_name}-jenkins-agent-ecr"
+
+  depends_on = [module.eks, module.ecr]
+}

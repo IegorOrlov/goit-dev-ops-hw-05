@@ -1,0 +1,92 @@
+controller:
+  serviceType: ClusterIP
+  agentListenerEnabled: false
+  numExecutors: 0
+  javaOpts: "-Xmx512m"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 768Mi
+    limits:
+      cpu: "1"
+      memory: 1280Mi
+  sidecars:
+    configAutoReload:
+      enabled: false
+
+agent:
+  podName: kaniko
+  customJenkinsLabels: [kaniko]
+  nodeUsageMode: EXCLUSIVE
+  websocket: true
+  showRawYaml: false
+  containerCap: 1
+  instanceCap: 1
+  runAsUser: 0
+  runAsGroup: 0
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  yamlTemplate: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      annotations:
+        eks.amazonaws.com/skip-containers: git,jnlp
+    spec:
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: git
+          image: alpine/git:v2.52.0
+          workingDir: /home/jenkins/agent
+          command: ["/bin/sh", "-c", "sleep 99d"]
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+        - name: kaniko
+          image: gcr.io/kaniko-project/executor:v1.24.0-debug
+          workingDir: /home/jenkins/agent
+          command: ["/busybox/sh", "-c", "sleep 99d"]
+          env:
+            - name: AWS_SDK_LOAD_CONFIG
+              value: "true"
+            - name: AWS_EC2_METADATA_DISABLED
+              value: "true"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1280Mi
+
+serviceAccountAgent:
+  create: true
+  name: jenkins-agent
+  automountServiceAccountToken: false
+
+persistence:
+  storageClass: jenkins-gp3
+  size: 8Gi
+
+extraObjects:
+  - apiVersion: storage.k8s.io/v1
+    kind: StorageClass
+    metadata:
+      name: jenkins-gp3
+    provisioner: ebs.csi.aws.com
+    parameters:
+      type: gp3
+      encrypted: "true"
+    reclaimPolicy: Delete
+    volumeBindingMode: WaitForFirstConsumer

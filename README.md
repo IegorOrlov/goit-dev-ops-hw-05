@@ -4,7 +4,7 @@
 
 Навчальний проєкт готує CI/CD для Django в Amazon EKS у регіоні `us-west-2`. Jenkins збиратиме образ із HW-02 і публікуватиме його в ECR. Argo CD застосовуватиме Helm chart із HW-05 після оновлення тега образу в Git.
 
-Terraform створює VPC із public/private subnets, Internet Gateway, один NAT Gateway, ECR repository, кластер EKS `1.35` і два робочі вузли `t3.small`. Docker image Django зберігається в ECR. Helm chart розгортає Django, передає змінні середовища через ConfigMap і відкриває HTTP-доступ через публічний Network Load Balancer.
+Terraform створює VPC із public/private subnets, Internet Gateway, один NAT Gateway, ECR repository, кластер EKS `1.35` і три робочі вузли `t3.small`. Docker image Django зберігається в ECR. Helm chart розгортає Django, передає змінні середовища через ConfigMap і відкриває HTTP-доступ через публічний Network Load Balancer.
 
 PostgreSQL працює в одному pod із постійним диском EBS `1Gi`. HPA керує кількістю Django pods у межах 2–6 із цільовим середнім CPU utilization 70%. Terraform state зберігається в S3, блокування забезпечує DynamoDB. Після демо інструкція передбачає повне видалення створених ресурсів.
 
@@ -15,14 +15,33 @@ PostgreSQL працює в одному pod із постійним диском
 | Ресурс | Кількість та орієнтовна ставка | За 2 години, USD |
 | --- | --- | --- |
 | EKS зі standard support | 1 кластер × $0.10/год | 0.20 |
-| EC2 `t3.small` | 2 вузли × близько $0.021/год | 0.084 |
+| EC2 `t3.small` | 3 вузли × близько $0.021/год | 0.126 |
 | NAT Gateway | 1 × близько $0.045/год | 0.09 |
 | Network Load Balancer | 1 × близько $0.0225/год | 0.045 |
 | Public IPv4 | 3 адреси NLB та 1 NAT EIP × $0.005/год | 0.04 |
-| EBS | 40 GiB root-дисків та 1 GiB PostgreSQL | близько 0.01 |
-| **Базова вартість** | | **близько 0.47** |
+| EBS | 60 GiB root-дисків, 8 GiB Jenkins та 1 GiB PostgreSQL | близько 0.01 |
+| **Базова вартість** | | **близько 0.51** |
 
 Додатково оплачуються обробка traffic через NAT Gateway, NLB capacity units, передавання даних, зберігання та API-запити ECR/S3/DynamoDB, можливі T3 CPU credits. Практичний орієнтир для короткого демо — **$1–2**. Фактична сума залежить від часу роботи й обсягу використання. Перед запуском звірте регіональні тарифи, після демо виконайте cleanup у пунктах 6–9. [EKS](https://aws.amazon.com/eks/pricing/), [EC2](https://aws.amazon.com/ec2/instance-types/t3/), [NAT та IPv4](https://aws.amazon.com/vpc/pricing/), [NLB](https://aws.amazon.com/elasticloadbalancing/pricing/), [EBS](https://aws.amazon.com/ebs/pricing/), [AWS Calculator](https://calculator.aws/).
+
+## Місткість EKS
+
+Оцінка за Kubernetes requests для одного Jenkins build і Django на верхній межі HPA. Для Django враховано сім pods під час rollout або шість pods і Job міграцій, а також PostgreSQL.
+
+| Компонент | CPU | Пам’ять | Pods |
+| --- | ---: | ---: | ---: |
+| Jenkins controller | 250m | 768 MiB | 1 |
+| Jenkins agent з Git і Kaniko | 400m | 832 MiB | 1 |
+| Django і PostgreSQL | 800m | 1 152 MiB | 8 |
+| Бюджет для Argo CD | 500m | 640 MiB | 6 |
+| EKS і add-ons, оцінка | 1 000m | 768 MiB | 14 |
+| **Разом** | **2 950m** | **4 160 MiB** | **30** |
+
+Два `t3.small` мають разом 4 GiB номінальної пам’яті до резерву EKS, тож потрібен третій вузол. За типової конфігурації VPC CNI максимальна кількість pods на вузол становить `3 × (4 − 1) + 2 = 11`. Три вузли дають 33 місця під pods, із яких 30 закладено в оцінку. [Ліміти ENI та IPv4 для EC2](https://docs.aws.amazon.com/ec2/latest/instancetypes/gp.html), [вибір типу інстанса для EKS](https://docs.aws.amazon.com/eks/latest/userguide/choosing-instance-type.html).
+
+Резерв пам’яті за цієї кількості pods становить приблизно `11 × 11 + 255 + 100 = 476 MiB` на вузол. Від номінальних 2 048 MiB лишається до 1 572 MiB на вузол, або близько 4,6 GiB на групу. Один можливий розподіл запитів становить 1 408 MiB і 10 pods на першому вузлі, 1 408 MiB і 9 pods на другому та 1 344 MiB і 11 pods на третьому. Перед запуском звірте фактичні `Allocatable` та `Allocated resources` у `kubectl describe nodes`. Розміщення залежить від requests Argo CD та зон EBS volumes. [Розрахунок allocatable memory для EKS](https://docs.aws.amazon.com/batch/latest/userguide/memory-cpu-batch-eks.html).
+
+Три вузли потребують 6 вільних vCPU у квоті **Running On-Demand Standard instances** в `us-west-2`. Перед розгортанням адміністратор перевіряє застосовану квоту в **Service Quotas → Amazon EC2**. Стандартна квота AWS становить 5 vCPU. Якщо вільних vCPU менше шести, підвищіть квоту до запуску. [Квоти EC2 On-Demand](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-on-demand-instances.html).
 
 ## Передумови
 
@@ -42,6 +61,13 @@ PostgreSQL працює в одному pod із постійним диском
 ```
 
 Адміністратор створює customer managed policy `lesson-7-eks-role-boundary` з [role-boundary.json](role-boundary.json) та `GoitHw04TerraformAccess` з [terraform-student-policy.json](terraform-student-policy.json). Користувачу призначається `GoitHw04TerraformAccess`, boundary застосовує Terraform до службових ролей. Для іншого account або IAM user замініть відповідні значення в JSON policies та `TF_VAR_admin_principal_arn`.
+
+Для Jenkins адміністратор створює також дві customer managed policies у тому самому account.
+
+- `lesson-7-eks-jenkins-agent-ecr` з [jenkins-agent-ecr-policy.json](jenkins-agent-ecr-policy.json). Terraform використовує її як permissions boundary та identity policy ролі агента. Upload і pull обмежені ECR repository `lesson-5-ecr`. `ecr:GetAuthorizationToken` застосовується до `*`.
+- `GoitHw05JenkinsAccess` з [terraform-jenkins-policy.json](terraform-jenkins-policy.json), яку адміністратор призначає `terraform-student`. Якщо `GoitHw04TerraformAccess` уже існує, оновіть її з поточного JSON, щоб Terraform міг збільшити наявну node group.
+
+Вузли EKS завантажують образи через `AmazonEC2ContainerRegistryPullOnly`. IRSA для публікації використовує тільки service account `jenkins-agent` у namespace `jenkins`. Для іншого account підставте його ID в обох Jenkins policies.
 
 ## 1. Контекст збірки для Jenkins
 
@@ -88,10 +114,10 @@ terraform state pull > "$BACKUP_DIR/before-s3.tfstate"
 ```bash
 terraform init -migrate-state
 aws iam create-service-linked-role --aws-service-name eks-nodegroup.amazonaws.com
-terraform apply
+terraform apply -var='enable_jenkins=false'
 ```
 
-Service-linked role створюється один раз для EKS node groups. Якщо AWS повідомляє, що `AWSServiceRoleForAmazonEKSNodegroup` уже існує, продовжуйте з `terraform apply`.
+Service-linked role створюється один раз для EKS node groups. Якщо AWS повідомляє, що `AWSServiceRoleForAmazonEKSNodegroup` уже існує, продовжуйте з `terraform apply -var='enable_jenkins=false'`.
 
 ## 4. Підключитися до EKS та встановити add-ons
 
@@ -128,6 +154,32 @@ helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver 
 helm upgrade --install metrics-server metrics-server/metrics-server \
   --kube-context "$CLUSTER_NAME" --namespace kube-system --version 3.14.0 --wait --timeout 10m
 ```
+
+### Встановити Jenkins
+
+Після `Ready` вузлів і готовності EBS CSI увімкніть Jenkins. Helm provider підключається до EKS API з CA кластера й отримує токен через `aws eks get-token`. Поки Jenkins має залишатись встановленим, використовуйте `TF_VAR_enable_jenkins=true` під час наступних Terraform apply.
+
+```bash
+export TF_VAR_enable_jenkins=true
+terraform apply
+kubectl --context "$CLUSTER_NAME" -n jenkins get sts,pvc
+```
+
+Отримайте ім’я адміністратора та випадковий пароль з Kubernetes Secret у приватному terminal. Запустіть port-forward і відкрийте `http://localhost:8080`.
+
+```bash
+kubectl --context "$CLUSTER_NAME" -n jenkins get secret jenkins \
+  -o jsonpath='{.data.jenkins-admin-user}' | base64 -d
+printf '\n'
+kubectl --context "$CLUSTER_NAME" -n jenkins get secret jenkins \
+  -o jsonpath='{.data.jenkins-admin-password}' | base64 -d
+printf '\n'
+kubectl --context "$CLUSTER_NAME" -n jenkins port-forward service/jenkins 8080:8080
+```
+
+Jenkins controller зберігає конфігурацію на EBS PVC. Для pipeline використовується label `kaniko` і контейнери `git`, `kaniko` (`/busybox/sh`) та `jnlp` зі спільним workspace. Тимчасові AWS credentials від IRSA отримує контейнер `kaniko`, де їх використовує вбудований ECR credential helper.
+
+Для читання публічного HW-02 автентифікація Git не потрібна. Якщо HW-02 стане приватним, додайте облікові дані тільки на читання під ID `github-hw02-read`. Для оновлення HW-05 додайте в Jenkins Credentials тип `Username with password` під ID `github-hw05-write`, де пароль — GitHub token з `Contents: Read and write` лише для HW-05. Перед запуском перевірте, що його власник може пушити в цільову гілку. Облікові дані зберігаються у Jenkins.
 
 ## 5. Перший запуск через GitOps
 
@@ -180,6 +232,21 @@ kubectl --context "$CLUSTER_NAME" wait --for=delete pv/"$PV_NAME" --timeout=10m
 
 Для цих Console-перевірок увійдіть під адміністратором у той самий AWS account. Користувач `terraform-student` не має, зокрема, `elasticloadbalancing:DescribeLoadBalancers` та `ec2:DescribeVolumes`; Console під цим користувачем також не покаже ресурси. `AccessDenied` не підтверджує їх відсутність. Розширювати права `terraform-student` для cleanup не потрібно.
 
+Якщо Jenkins встановлено, дочекайтеся завершення активної збірки й видаліть його через той самий Terraform state, доки доступні EKS API та EBS CSI. Спочатку збережіть ім’я PV та ID диска для перевірки в AWS Console. Видалення релізу також видаляє Jenkins PVC і дані на ньому.
+
+```bash
+JENKINS_PV="$(kubectl --context "$CLUSTER_NAME" -n jenkins get pvc jenkins \
+  -o jsonpath='{.spec.volumeName}')"
+JENKINS_VOLUME_ID="$(kubectl --context "$CLUSTER_NAME" get pv "$JENKINS_PV" \
+  -o jsonpath='{.spec.csi.volumeHandle}')"
+printf '%s\n' "$JENKINS_VOLUME_ID" >> "$BACKUP_DIR/volume-ids.txt"
+unset TF_VAR_enable_jenkins
+terraform apply -var='enable_jenkins=false'
+kubectl --context "$CLUSTER_NAME" wait --for=delete pv/"$JENKINS_PV" --timeout=10m
+```
+
+Якщо PV вже відсутній, `NotFound` для його імені підтверджує завершення перевірки Kubernetes. Перевірте видалення Jenkins volume за збереженим ID у **EC2 Console → Volumes** перед видаленням EKS.
+
 ## 7. Очистити ECR та перенести state локально
 
 У **AWS Console**, Region **Oregon / us-west-2**, відкрийте **ECR → Private repositories → lesson-5-ecr → Images**. Видаліть усі tagged та untagged images. Якщо image використовується manifest index, спочатку видаліть index. Repository видалить Terraform. Перевірка має повернути `[]`.
@@ -228,7 +295,7 @@ aws dynamodb describe-table --table-name "$LOCK_TABLE"
 aws ec2 describe-vpcs --filters "Name=vpc-id,Values=$VPC_ID"
 aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" --query 'NatGateways[?State!=`deleted`]'
 aws ec2 describe-addresses --filters Name=tag:Project,Values=goit-dev-ops-hw-04
-for role_suffix in cluster node load-balancer ebs-csi; do
+for role_suffix in cluster node load-balancer ebs-csi jenkins-agent; do
   aws iam get-role --role-name "$CLUSTER_NAME-$role_suffix"
 done
 aws iam get-policy --policy-arn "arn:aws:iam::$ACCOUNT_ID:policy/$CLUSTER_NAME-load-balancer"
@@ -238,7 +305,7 @@ aws iam get-policy --policy-arn "arn:aws:iam::$ACCOUNT_ID:policy/$CLUSTER_NAME-l
 
 Ручні IAM policies та service-linked roles самі по собі [не оплачуються](https://aws.amazon.com/iam/faqs/). Для припинення витрат їх можна залишити. Наступні дії потрібні лише для повного видалення створених для демо IAM resources.
 
-Після успішного destroy адміністратор від'єднує `GoitHw04TerraformAccess` від `terraform-student` і видаляє цю policy та `lesson-7-eks-role-boundary`. Вони створювалися вручну та перебувають поза Terraform state.
+Після успішного destroy адміністратор від'єднує `GoitHw04TerraformAccess` і `GoitHw05JenkinsAccess` від `terraform-student` і видаляє ці policies, `lesson-7-eks-role-boundary` та `lesson-7-eks-jenkins-agent-ecr`. Вони створювалися вручну та перебувають поза Terraform state.
 
 Адміністратор також видаляє через **IAM → Roles** service-linked roles, створені цим розгортанням, після звільнення їхніх залежностей.
 

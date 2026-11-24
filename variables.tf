@@ -26,3 +26,9 @@ variable "public_access_cidrs" {
     error_message = "Вкажіть IPv4 CIDR адміністратора, наприклад поточну адресу з /32."
   }
 }
+
+variable "enable_jenkins" {
+  description = "Встановити Jenkins після підготовки EKS, nodes та EBS CSI"
+  type        = bool
+  default     = false
+}

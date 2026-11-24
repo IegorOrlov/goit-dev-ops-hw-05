@@ -32,3 +32,23 @@ output "node_group_name" {
   description = "Назва managed node group"
   value       = aws_eks_node_group.main.node_group_name
 }
+
+output "cluster_certificate_authority_data" {
+  description = "Base64-сертифікат CA для EKS API"
+  value       = aws_eks_cluster.main.certificate_authority[0].data
+}
+
+output "oidc_provider_arn" {
+  description = "ARN IAM OIDC provider кластера"
+  value       = aws_iam_openid_connect_provider.main.arn
+}
+
+output "oidc_provider_url" {
+  description = "URL IAM OIDC provider кластера"
+  value       = aws_iam_openid_connect_provider.main.url
+}
+
+output "account_id" {
+  description = "Ідентифікатор AWS account для IAM policies"
+  value       = data.aws_caller_identity.current.account_id
+}
