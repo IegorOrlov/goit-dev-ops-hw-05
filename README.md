@@ -1,8 +1,8 @@
-# Розгортання Django в AWS EKS
+# CI/CD для Django в AWS EKS
 
 ## Опис проєкту
 
-Навчальний проєкт демонструє розгортання контейнеризованого Django-застосунку в Amazon EKS через Terraform і Helm у регіоні `us-west-2`.
+Навчальний проєкт готує CI/CD для Django в Amazon EKS у регіоні `us-west-2`. Jenkins збиратиме образ із HW-02 і публікуватиме його в ECR. Argo CD застосовуватиме Helm chart із HW-05 після оновлення тега образу в Git.
 
 Terraform створює VPC із public/private subnets, Internet Gateway, один NAT Gateway, ECR repository, кластер EKS `1.35` і два робочі вузли `t3.small`. Docker image Django зберігається в ECR. Helm chart розгортає Django, передає змінні середовища через ConfigMap і відкриває HTTP-доступ через публічний Network Load Balancer.
 
@@ -26,7 +26,7 @@ PostgreSQL працює в одному pod із постійним диском
 
 ## Передумови
 
-Потрібні Terraform `>=1.15`, AWS CLI v2 із `aws login`, Docker з Buildx, Helm, `kubectl`, Python 3 та Django source у `../goit-dev-ops-hw-02/django`. Усі команди виконуйте з кореня цього репозиторію в одному terminal. За помилки зупиніться на поточному кроці.
+Для підготовки й перевірки інфраструктури потрібні Terraform `>=1.15`, AWS CLI v2 із `aws login`, Helm, `kubectl`, Python 3 і `curl`. Для збірки Jenkins потрібен доступ до GitHub-репозиторіїв HW-02 і HW-05. Команди AWS і Kubernetes виконуйте з кореня цього репозиторію в одному terminal. За помилки зупиніться на поточному кроці.
 
 Команди використовують profile `goit` для IAM user `terraform-student`. Адміністратор призначає цьому користувачу AWS managed policies `AmazonS3FullAccess`, `AmazonDynamoDBFullAccess_v2`, `AmazonVPCFullAccess`, `AmazonEC2ContainerRegistryFullAccess`, `SignInLocalDevelopmentAccess`, а також inline policy `TerraformEipReadAttributes`.
 
@@ -43,16 +43,16 @@ PostgreSQL працює в одному pod із постійним диском
 
 Адміністратор створює customer managed policy `lesson-7-eks-role-boundary` з [role-boundary.json](role-boundary.json) та `GoitHw04TerraformAccess` з [terraform-student-policy.json](terraform-student-policy.json). Користувачу призначається `GoitHw04TerraformAccess`, boundary застосовує Terraform до службових ролей. Для іншого account або IAM user замініть відповідні значення в JSON policies та `TF_VAR_admin_principal_arn`.
 
-## 1. Зібрати Docker image
+## 1. Контекст збірки для Jenkins
+
+Jenkins отримує свіжий checkout гілки `lesson-4` (`refs/heads/lesson-4`) з HW-02. У прикладі `HW02_DIR` і `HW05_DIR` — абсолютні шляхи до двох checkout у workspace агента. Dockerfile з HW-05 замінює Dockerfile у свіжому checkout HW-02 лише для цієї збірки. [HW-02, гілка lesson-4](https://github.com/IegorOrlov/goit-dev-ops-hw-02/tree/lesson-4/django).
 
 ```bash
-export IMAGE_TAG=lesson-7
-export NAMESPACE=django-demo
-export RELEASE=django
-docker buildx build --platform linux/amd64 --load \
-  --build-context deployment=./django --file django/Dockerfile \
-  --tag "django-app:$IMAGE_TAG" ../goit-dev-ops-hw-02/django
+CONTEXT_DIR="$HW02_DIR/django"
+cp "$HW05_DIR/django/Dockerfile" "$HW05_DIR/django/kubernetes_settings.py" "$CONTEXT_DIR/"
 ```
+
+Kaniko отримує `--context="dir://$CONTEXT_DIR"` і `--dockerfile="$CONTEXT_DIR/Dockerfile"`. Контекст містить `requirements.txt`, `manage.py`, пакет `my-app` і `kubernetes_settings.py`. Dockerfile задає `DJANGO_SETTINGS_MODULE=kubernetes_settings`. Цей модуль додає читання `ALLOWED_HOSTS` із середовища, а параметри PostgreSQL застосунок читає з успадкованих Django settings через `POSTGRES_*`.
 
 ## 2. Увійти в AWS
 
@@ -72,7 +72,7 @@ export TF_VAR_bucket_name="goit-tfstate-$ACCOUNT_ID-lesson-5"
 export TF_VAR_admin_principal_arn="arn:aws:iam::$ACCOUNT_ID:user/terraform-student"
 export TF_VAR_public_access_cidrs='["REPLACE_PUBLIC_IPV4/32"]'
 umask 077
-export BACKUP_DIR="$(mktemp -d /tmp/goit-hw04-backup.XXXXXX)"
+export BACKUP_DIR="$(mktemp -d /tmp/goit-hw05-backup.XXXXXX)"
 ```
 
 Якщо інфраструктура вже розгорнута, залиште активний S3 backend із її bucket/key, виконайте `terraform init` і продовжуйте з пункту 4. Для нового запуску після повного cleanup спочатку закоментуйте блок S3 backend у `backend.tf`, потім створіть backend з локальним state. Перед `yes` у `apply` перегляньте його план.
@@ -129,49 +129,30 @@ helm upgrade --install metrics-server metrics-server/metrics-server \
   --kube-context "$CLUSTER_NAME" --namespace kube-system --version 3.14.0 --wait --timeout 10m
 ```
 
-## 5. Завантажити image та розгорнути застосунок
+## 5. Перший запуск через GitOps
 
-```bash
-aws ecr get-login-password | docker login --username AWS --password-stdin "${ECR_URL%%/*}"
-docker tag "django-app:$IMAGE_TAG" "$ECR_URL:$IMAGE_TAG"
-docker push "$ECR_URL:$IMAGE_TAG"
-helm upgrade --install "$RELEASE" charts/django-app --kube-context "$CLUSTER_NAME" \
-  --namespace "$NAMESPACE" --create-namespace \
-  --set-string image.repository="$ECR_URL" --set-string image.tag="$IMAGE_TAG" \
-  --set-string config.ALLOWED_HOSTS="localhost\,127.0.0.1\,$RELEASE-django" \
-  --wait --timeout 10m
-kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" exec deployment/"$RELEASE-django" -- python manage.py migrate --noinput
-```
+Перед першим запуском Jenkins задайте `image.repository` зі значенням `$ECR_URL` у `charts/django-app/values.yaml` цільової гілки HW-05. Після публікації першого образу Jenkins оновлює `image.tag` у Git. Створюйте Argo CD `Application`, коли цей ECR URL і опублікований тег уже є в цільовій гілці. Для здачі Jenkins і Argo CD використовують `main`. Argo CD відстежує шлях `charts/django-app` у цій гілці.
 
-Додайте IPv4 NLB до `ALLOWED_HOSTS`. За тимчасової помилки DNS повторіть отримання IP через 30 секунд. Остання команда очікує HTTP `200`, адресу `http://$NLB_IP` можна відкрити у браузері.
+Під час повного sync Argo CD спочатку застосовує ConfigMap і ресурси PostgreSQL, включно з EBS PVC, та чекає готовності БД. Потім Job запускає `python manage.py migrate --noinput` з тим самим образом і ConfigMap, що й Django Deployment. Після успіху Argo CD застосовує Django Deployment, HPA і публічний NLB Service.
+
+Для навчального демо `config.ALLOWED_HOSTS` має значення `"*"`, щоб Django приймав HTTP-запити на DNS-ім’я або IPv4 нового NLB відразу після його появи. Якщо є заздалегідь відоме DNS-ім’я, у Git можна задати його або список імен через кому.
+
+Після синхронізації встановіть `NAMESPACE` і `RELEASE` за конфігурацією `Application` та перевірте HTTP через hostname NLB.
 
 ```bash
 kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" wait \
   --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' service/"$RELEASE-django" --timeout=5m
-export NLB_DNS="$(kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get service "$RELEASE-django" \
+NLB_DNS="$(kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get service "$RELEASE-django" \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
-export NLB_IP="$(python3 -c 'import socket,sys; print(socket.gethostbyname(sys.argv[1]))' "$NLB_DNS")"
-helm upgrade "$RELEASE" charts/django-app --kube-context "$CLUSTER_NAME" \
-  --namespace "$NAMESPACE" --reuse-values \
-  --set-string config.ALLOWED_HOSTS="localhost\,127.0.0.1\,$RELEASE-django\,$NLB_IP" --wait --timeout 10m
-python3 - "$NLB_IP" <<'PYTHON'
-import sys, time, urllib.request
-for attempt in range(30):
-    try:
-        with urllib.request.urlopen("http://" + sys.argv[1], timeout=10) as response:
-            print(response.status)
-            assert response.status == 200
-        break
-    except (OSError, AssertionError):
-        if attempt == 29:
-            raise
-        time.sleep(10)
-PYTHON
+curl --fail --max-time 10 --retry 12 --retry-all-errors --retry-delay 10 --output /dev/null \
+  --write-out '%{http_code}\n' "http://$NLB_DNS/"
 ```
+
+Очікувана відповідь Django — HTTP `200`.
 
 ## 6. Видалити застосунок, NLB і PostgreSQL volume
 
-Збережіть IDs до видалення. Controllers мають працювати до завершення cleanup NLB/EBS. Після частково невдалого deployment видаляйте фактично створені ресурси, пропускаючи команди з відсутніми IDs.
+Збережіть IDs до видалення. Підставте namespace Argo CD та назву `Application` у `ARGOCD_NAMESPACE` і `APP_NAME`. `Application` має містити finalizer `resources-finalizer.argocd.argoproj.io` для каскадного видалення ресурсів Django. Argo CD, AWS Load Balancer Controller та EBS CSI мають працювати до завершення cleanup NLB/EBS. Після частково невдалого deployment видаляйте фактично створені ресурси, пропускаючи команди з відсутніми IDs.
 
 ```bash
 terraform state pull > "$BACKUP_DIR/before-cleanup.tfstate"
@@ -190,11 +171,12 @@ aws ec2 describe-instances --filters "Name=vpc-id,Values=$VPC_ID" \
   --output text | tr '\t' '\n' > "$BACKUP_DIR/volume-ids.txt"
 printf '%s\n' "$DB_VOLUME_ID" >> "$BACKUP_DIR/volume-ids.txt"
 printf '%s\n' "$NLB_NAME" "$TARGET_GROUP_ARN" "$DB_VOLUME_ID" "$OIDC_PROVIDER_ARN" > "$BACKUP_DIR/resource-ids.txt"
-helm uninstall "$RELEASE" --kube-context "$CLUSTER_NAME" --namespace "$NAMESPACE" --ignore-not-found --wait --timeout 10m
+kubectl --context "$CLUSTER_NAME" -n "$ARGOCD_NAMESPACE" delete application "$APP_NAME" \
+  --cascade=foreground --ignore-not-found --wait=true --timeout=10m
 kubectl --context "$CLUSTER_NAME" wait --for=delete pv/"$PV_NAME" --timeout=10m
 ```
 
-`helm uninstall --wait` очікує видалення Service з controller finalizer, а видалення PV — завершення CSI reclaim. Якщо PV вже відсутній, відповідь `NotFound` для його точного імені означає, що перевірку Kubernetes завершено. Перед видаленням EKS адміністратор у **EC2 Console**, Region **Oregon / us-west-2**, перевіряє відсутність NLB `$NLB_NAME` у **Load Balancers**, його target group зі збереженим ARN у **Target Groups** та PostgreSQL volume `$DB_VOLUME_ID` у **Volumes**. За затримки дочекайтеся видалення, зберігаючи controllers запущеними. Add-ons і namespace видаляться разом із EKS під час `terraform destroy`.
+Каскадне видалення `Application` очікує видалення його ресурсів, включно із Service з controller finalizer. Видалення PV підтверджує завершення CSI reclaim. Якщо PV вже відсутній, відповідь `NotFound` для його точного імені означає, що перевірку Kubernetes завершено. Перед видаленням EKS адміністратор у **EC2 Console**, Region **Oregon / us-west-2**, перевіряє відсутність NLB `$NLB_NAME` у **Load Balancers**, його target group зі збереженим ARN у **Target Groups** та PostgreSQL volume `$DB_VOLUME_ID` у **Volumes**. За затримки дочекайтеся видалення, зберігаючи controllers запущеними. Add-ons і namespace видаляться разом із EKS під час `terraform destroy`.
 
 Для цих Console-перевірок увійдіть під адміністратором у той самий AWS account. Користувач `terraform-student` не має, зокрема, `elasticloadbalancing:DescribeLoadBalancers` та `ec2:DescribeVolumes`; Console під цим користувачем також не покаже ресурси. `AccessDenied` не підтверджує їх відсутність. Розширювати права `terraform-student` для cleanup не потрібно.
 

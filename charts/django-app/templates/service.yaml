@@ -3,6 +3,7 @@ kind: Service
 metadata:
   name: {{ .Release.Name }}-django
   annotations:
+    argocd.argoproj.io/sync-wave: "2"
     {{- toYaml .Values.service.annotations | nindent 4 }}
 spec:
   type: {{ .Values.service.type }}

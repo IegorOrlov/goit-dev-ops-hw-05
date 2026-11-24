@@ -1,6 +1,6 @@
 image:
   repository: django-app
-  tag: lesson-7
+  tag: bootstrap
   pullPolicy: IfNotPresent
 
 containerPort: 8000
@@ -19,7 +19,7 @@ config:
   POSTGRES_USER: django
   POSTGRES_DB: django
   POSTGRES_PASSWORD: demo-password
-  ALLOWED_HOSTS: localhost,127.0.0.1
+  ALLOWED_HOSTS: "*"
 
 resources:
   requests:
