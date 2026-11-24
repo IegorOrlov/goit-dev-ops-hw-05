@@ -1,0 +1,299 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:DescribeClusterVersions"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-west-2"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:CreateCluster"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "us-west-2",
+          "aws:RequestTag/Project": "goit-dev-ops-hw-04"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:DescribeCluster",
+        "eks:DeleteCluster",
+        "eks:CreateNodegroup",
+        "eks:CreateAccessEntry",
+        "eks:ListAccessEntries",
+        "eks:ListNodegroups",
+        "eks:ListTagsForResource",
+        "eks:TagResource",
+        "eks:UntagResource"
+      ],
+      "Resource": "arn:aws:eks:us-west-2:412930559924:cluster/lesson-7-eks"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:DescribeNodegroup",
+        "eks:DeleteNodegroup",
+        "eks:ListTagsForResource",
+        "eks:TagResource",
+        "eks:UntagResource"
+      ],
+      "Resource": "arn:aws:eks:us-west-2:412930559924:nodegroup/lesson-7-eks/demo/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:DescribeAccessEntry",
+        "eks:DeleteAccessEntry",
+        "eks:UpdateAccessEntry",
+        "eks:ListAssociatedAccessPolicies",
+        "eks:ListTagsForResource",
+        "eks:TagResource",
+        "eks:UntagResource"
+      ],
+      "Resource": "arn:aws:eks:us-west-2:412930559924:access-entry/lesson-7-eks/user/412930559924/terraform-student/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "eks:AssociateAccessPolicy",
+        "eks:DisassociateAccessPolicy"
+      ],
+      "Resource": "arn:aws:eks:us-west-2:412930559924:access-entry/lesson-7-eks/user/412930559924/terraform-student/*",
+      "Condition": {
+        "StringEquals": {
+          "eks:policyArn": "arn:aws:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::412930559924:role/lesson-7-eks-cluster",
+        "arn:aws:iam::412930559924:role/lesson-7-eks-node",
+        "arn:aws:iam::412930559924:role/lesson-7-eks-load-balancer",
+        "arn:aws:iam::412930559924:role/lesson-7-eks-ebs-csi"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:PermissionsBoundary": "arn:aws:iam::412930559924:policy/lesson-7-eks-role-boundary",
+          "aws:RequestTag/Project": "goit-dev-ops-hw-04"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetRole",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies",
+        "iam:ListInstanceProfilesForRole",
+        "iam:DeleteRole",
+        "iam:TagRole",
+        "iam:UntagRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::412930559924:role/lesson-7-eks-cluster",
+        "arn:aws:iam::412930559924:role/lesson-7-eks-node",
+        "arn:aws:iam::412930559924:role/lesson-7-eks-load-balancer",
+        "arn:aws:iam::412930559924:role/lesson-7-eks-ebs-csi"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::412930559924:role/lesson-7-eks-cluster",
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": [
+            "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::412930559924:role/lesson-7-eks-node",
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": [
+            "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
+            "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly",
+            "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::412930559924:role/lesson-7-eks-load-balancer",
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": [
+            "arn:aws:iam::412930559924:policy/lesson-7-eks-load-balancer"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:DetachRolePolicy"
+      ],
+      "Resource": "arn:aws:iam::412930559924:role/lesson-7-eks-ebs-csi",
+      "Condition": {
+        "ArnEquals": {
+          "iam:PolicyARN": [
+            "arn:aws:iam::aws:policy/AmazonEBSCSIDriverPolicyV2"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreatePolicy",
+        "iam:GetPolicy",
+        "iam:GetPolicyVersion",
+        "iam:ListPolicyVersions",
+        "iam:DeletePolicyVersion",
+        "iam:DeletePolicy",
+        "iam:TagPolicy",
+        "iam:UntagPolicy",
+        "iam:ListPolicyTags"
+      ],
+      "Resource": "arn:aws:iam::412930559924:policy/lesson-7-eks-load-balancer"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::412930559924:role/lesson-7-eks-cluster",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "eks.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:PassRole"
+      ],
+      "Resource": "arn:aws:iam::412930559924:role/lesson-7-eks-node",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": [
+            "eks.amazonaws.com",
+            "ec2.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateOpenIDConnectProvider",
+        "iam:TagOpenIDConnectProvider"
+      ],
+      "Resource": "arn:aws:iam::412930559924:oidc-provider/oidc.eks.us-west-2.amazonaws.com/id/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "goit-dev-ops-hw-04"
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:GetOpenIDConnectProvider",
+        "iam:ListOpenIDConnectProviderTags",
+        "iam:DeleteOpenIDConnectProvider",
+        "iam:TagOpenIDConnectProvider",
+        "iam:UntagOpenIDConnectProvider"
+      ],
+      "Resource": "arn:aws:iam::412930559924:oidc-provider/oidc.eks.us-west-2.amazonaws.com/id/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "goit-dev-ops-hw-04"
+        }
+      }
+    },
+    {
+      "Effect": "Deny",
+      "Action": [
+        "iam:PutRolePermissionsBoundary",
+        "iam:DeleteRolePermissionsBoundary"
+      ],
+      "Resource": [
+        "arn:aws:iam::412930559924:role/lesson-7-eks-cluster",
+        "arn:aws:iam::412930559924:role/lesson-7-eks-node",
+        "arn:aws:iam::412930559924:role/lesson-7-eks-load-balancer",
+        "arn:aws:iam::412930559924:role/lesson-7-eks-ebs-csi"
+      ]
+    },
+    {
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreatePolicyVersion",
+        "iam:SetDefaultPolicyVersion",
+        "iam:DeletePolicyVersion",
+        "iam:DeletePolicy"
+      ],
+      "Resource": "arn:aws:iam::412930559924:policy/lesson-7-eks-role-boundary"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateServiceLinkedRole"
+      ],
+      "Resource": [
+        "arn:aws:iam::412930559924:role/aws-service-role/eks.amazonaws.com/AWSServiceRoleForAmazonEKS",
+        "arn:aws:iam::412930559924:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup",
+        "arn:aws:iam::412930559924:role/aws-service-role/elasticloadbalancing.amazonaws.com/AWSServiceRoleForElasticLoadBalancing"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": [
+            "eks.amazonaws.com",
+            "eks-nodegroup.amazonaws.com",
+            "elasticloadbalancing.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": "arn:aws:iam::412930559924:role/aws-service-role/eks-nodegroup.amazonaws.com/AWSServiceRoleForAmazonEKSNodegroup"
+    }
+  ]
+}

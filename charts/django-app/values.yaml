@@ -1,0 +1,48 @@
+image:
+  repository: django-app
+  tag: lesson-7
+  pullPolicy: IfNotPresent
+
+containerPort: 8000
+service:
+  type: LoadBalancer
+  port: 80
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+    service.beta.kubernetes.io/aws-load-balancer-ip-address-type: ipv4
+    service.beta.kubernetes.io/aws-load-balancer-nlb-target-type: ip
+    service.beta.kubernetes.io/aws-load-balancer-attributes: load_balancing.cross_zone.enabled=true
+
+config:
+  POSTGRES_HOST: db
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: django
+  POSTGRES_DB: django
+  POSTGRES_PASSWORD: demo-password
+  ALLOWED_HOSTS: localhost,127.0.0.1
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: "1"
+    memory: 256Mi
+
+autoscaler:
+  minReplicas: 2
+  maxReplicas: 6
+  averageUtilization: 70
+
+postgres:
+  image: postgres:16.11-bookworm
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  storage:
+    size: 1Gi
+    type: gp3
