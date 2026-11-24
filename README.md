@@ -2,7 +2,18 @@
 
 ## Опис проєкту
 
-Навчальний проєкт готує CI/CD для Django в Amazon EKS у регіоні `us-west-2`. Jenkins збиратиме образ із HW-02 і публікуватиме його в ECR. Argo CD застосовуватиме Helm chart із HW-05 після оновлення тега образу в Git.
+Навчальний проєкт реалізує CI/CD для Django в Amazon EKS у регіоні `us-west-2`. Terraform встановлює Jenkins і Argo CD через Helm. Jenkins публікує образ у ECR і записує його тег у Git. Argo CD автоматично синхронізує Helm chart, а вузли EKS завантажують образ з ECR.
+
+```mermaid
+flowchart LR
+    HW02["HW-02 · lesson-4"] -->|"Push виявляє Poll SCM"| Jenkins["Jenkins · Git і Kaniko"]
+    Jenkins -->|"Публікує образ"| ECR["Amazon ECR"]
+    Jenkins -->|"Комітить image.repository та image.tag"| HW05["HW-05 · lesson-8-9"]
+    HW05 -->|"Jenkinsfile для запуску"| Jenkins
+    HW05 -->|"Ревізія Helm chart"| Argo["Argo CD"]
+    Argo -->|"Auto-sync"| EKS["Amazon EKS · Django і PostgreSQL"]
+    EKS -->|"Завантажує образ за тегом"| ECR
+```
 
 Terraform створює VPC із public/private subnets, Internet Gateway, один NAT Gateway, ECR repository, кластер EKS `1.35` і три робочі вузли `t3.small`. Docker image Django зберігається в ECR. Helm chart розгортає Django, передає змінні середовища через ConfigMap і відкриває HTTP-доступ через публічний Network Load Balancer.
 
@@ -45,7 +56,9 @@ PostgreSQL працює в одному pod із постійним диском
 
 ## Передумови
 
-Для підготовки й перевірки інфраструктури потрібні Terraform `>=1.15`, AWS CLI v2 із `aws login`, Helm, `kubectl`, Python 3 і `curl`. Для збірки Jenkins потрібен доступ до GitHub-репозиторіїв HW-02 і HW-05. Команди AWS і Kubernetes виконуйте з кореня цього репозиторію в одному terminal. За помилки зупиніться на поточному кроці.
+Потрібні Terraform `>=1.15, <2.0`, AWS CLI v2 із `aws login`, Helm, `kubectl`, Git, Python 3, `curl` і браузер для Jenkins, Argo CD та AWS Console. Виконуйте команди з кореня HW-05 в одному terminal, крім port-forward, для яких потрібні окремі вкладки. За помилки зупиніться на поточному кроці.
+
+Підготуйте AWS profile `goit`, публічну IPv4 для доступу до EKS API, адміністратора AWS для IAM і перевірки cleanup, GitHub token із правом запису в HW-05 та доступ на запис до HW-02 для погодженої демонстраційної зміни. Якщо HW-05 приватний, підготуйте для Argo CD окремий token із правом читання. Тримайте tokens, паролі й резервні копії state поза Git та журналами.
 
 Команди використовують profile `goit` для IAM user `terraform-student`. Адміністратор призначає цьому користувачу AWS managed policies `AmazonS3FullAccess`, `AmazonDynamoDBFullAccess_v2`, `AmazonVPCFullAccess`, `AmazonEC2ContainerRegistryFullAccess`, `SignInLocalDevelopmentAccess`, а також inline policy `TerraformEipReadAttributes`.
 
@@ -62,23 +75,29 @@ PostgreSQL працює в одному pod із постійним диском
 
 Адміністратор створює customer managed policy `lesson-7-eks-role-boundary` з [role-boundary.json](role-boundary.json) та `GoitHw04TerraformAccess` з [terraform-student-policy.json](terraform-student-policy.json). Користувачу призначається `GoitHw04TerraformAccess`, boundary застосовує Terraform до службових ролей. Для іншого account або IAM user замініть відповідні значення в JSON policies та `TF_VAR_admin_principal_arn`.
 
+Якщо в IAM досі активна версія `GoitHw04TerraformAccess` з HW-04, адміністратор відкриває **IAM → Policies → GoitHw04TerraformAccess → Permissions → Edit → JSON** і оновлює її за файлом [`terraform-student-policy.json` із кореня HW-05](terraform-student-policy.json). У HW-05 додано `eks:UpdateNodegroupConfig` і `eks:DescribeUpdate`, щоб Terraform міг збільшити наявну групу вузлів `demo` з 2 до 3 і дочекатися завершення оновлення. Якщо активна версія вже відповідає цьому файлу, переходьте до наступного кроку.
+
 Для Jenkins адміністратор створює також дві customer managed policies у тому самому account.
 
 - `lesson-7-eks-jenkins-agent-ecr` з [jenkins-agent-ecr-policy.json](jenkins-agent-ecr-policy.json). Terraform використовує її як permissions boundary та identity policy ролі агента. Upload і pull обмежені ECR repository `lesson-5-ecr`. `ecr:GetAuthorizationToken` застосовується до `*`.
-- `GoitHw05JenkinsAccess` з [terraform-jenkins-policy.json](terraform-jenkins-policy.json), яку адміністратор призначає `terraform-student`. Якщо `GoitHw04TerraformAccess` уже існує, оновіть її з поточного JSON, щоб Terraform міг збільшити наявну node group.
+- `GoitHw05JenkinsAccess` з [terraform-jenkins-policy.json](terraform-jenkins-policy.json), яку адміністратор призначає `terraform-student`.
 
 Вузли EKS завантажують образи через `AmazonEC2ContainerRegistryPullOnly`. IRSA для публікації використовує тільки service account `jenkins-agent` у namespace `jenkins`. Для іншого account підставте його ID в обох Jenkins policies.
 
-## 1. Контекст збірки для Jenkins
+## 1. Підготувати гілки GitHub
 
-Jenkins отримує свіжий checkout гілки `lesson-4` (`refs/heads/lesson-4`) з HW-02. У прикладі `HW02_DIR` і `HW05_DIR` — абсолютні шляхи до двох checkout у workspace агента. Dockerfile з HW-05 замінює Dockerfile у свіжому checkout HW-02 лише для цієї збірки. [HW-02, гілка lesson-4](https://github.com/IegorOrlov/goit-dev-ops-hw-02/tree/lesson-4/django).
+Перед платним розгортанням опублікуйте `lesson-8-9` з поточним `Jenkinsfile` і `charts/django-app/values.yaml` командою `git push -u origin lesson-8-9`. У GitHub перевірте, що власник Jenkins token може виконувати прямий push за правилами цієї гілки. Для демо Jenkins і Argo CD використовують `lesson-8-9`.
 
 ```bash
-CONTEXT_DIR="$HW02_DIR/django"
-cp "$HW05_DIR/django/Dockerfile" "$HW05_DIR/django/kubernetes_settings.py" "$CONTEXT_DIR/"
+export HW02_URL=https://github.com/IegorOrlov/goit-dev-ops-hw-02.git
+export HW05_URL=https://github.com/IegorOrlov/goit-dev-ops-hw-05.git
+git ls-remote --exit-code --heads "$HW02_URL" refs/heads/lesson-4
+git ls-remote --exit-code --heads "$HW05_URL" refs/heads/lesson-8-9
+git fetch "$HW05_URL" refs/heads/lesson-8-9
+git ls-tree -r --name-only FETCH_HEAD -- Jenkinsfile charts/django-app/values.yaml
 ```
 
-Kaniko отримує `--context="dir://$CONTEXT_DIR"` і `--dockerfile="$CONTEXT_DIR/Dockerfile"`. Контекст містить `requirements.txt`, `manage.py`, пакет `my-app` і `kubernetes_settings.py`. Dockerfile задає `DJANGO_SETTINGS_MODULE=kubernetes_settings`. Цей модуль додає читання `ALLOWED_HOSTS` із середовища, а параметри PostgreSQL застосунок читає з успадкованих Django settings через `POSTGRES_*`.
+Обидві перевірки Git refs мають повернути SHA, а остання команда має показати обидва файли. Jenkins отримує контекст із `django/` у HW-02 і додає Dockerfile та `kubernetes_settings.py` з HW-05 до workspace агента. Django отримує `ALLOWED_HOSTS` і налаштування PostgreSQL через змінні середовища.
 
 ## 2. Увійти в AWS
 
@@ -101,23 +120,29 @@ umask 077
 export BACKUP_DIR="$(mktemp -d /tmp/goit-hw05-backup.XXXXXX)"
 ```
 
-Якщо інфраструктура вже розгорнута, залиште активний S3 backend із її bucket/key, виконайте `terraform init` і продовжуйте з пункту 4. Для нового запуску після повного cleanup спочатку закоментуйте блок S3 backend у `backend.tf`, потім створіть backend з локальним state. Перед `yes` у `apply` перегляньте його план.
+Якщо ресурси вже існують, підключіть їхній чинний backend і перевірте `terraform state list`. Відновіть значення `TF_VAR_enable_jenkins`, `TF_VAR_enable_argo_cd` і `TF_VAR_enable_django_application` за наявними релізами перед наступним `apply`. Для нового середовища почніть із закоментованого блоку S3 у `backend.tf`. Перед підтвердженням кожного `apply` перегляньте план.
 
 ```bash
 terraform init
 terraform apply -target=module.s3_backend
 terraform state pull > "$BACKUP_DIR/before-s3.tfstate"
+terraform state list > "$BACKUP_DIR/before-s3.txt"
 ```
 
-Розкоментуйте блок S3 backend у `backend.tf`. У `bucket` впишіть значення `TF_VAR_bucket_name`, інші параметри залиште як у файлі. Потім перенесіть state в S3, підтвердьте копіювання та створіть решту ресурсів.
+Розкоментуйте блок S3 backend у `backend.tf`. У `bucket` впишіть значення `TF_VAR_bucket_name`. Потім перенесіть state в S3 із ключем `lesson-5/terraform.tfstate` та блокуванням через DynamoDB `terraform-locks`. Підтвердьте копіювання. [Міграція Terraform state](https://developer.hashicorp.com/terraform/cli/commands/init).
 
 ```bash
 terraform init -migrate-state
-aws iam create-service-linked-role --aws-service-name eks-nodegroup.amazonaws.com
-terraform apply -var='enable_jenkins=false'
+terraform state list > "$BACKUP_DIR/after-s3.txt"
+diff "$BACKUP_DIR/before-s3.txt" "$BACKUP_DIR/after-s3.txt"
 ```
 
-Service-linked role створюється один раз для EKS node groups. Якщо AWS повідомляє, що `AWSServiceRoleForAmazonEKSNodegroup` уже існує, продовжуйте з `terraform apply -var='enable_jenkins=false'`.
+Очікується порожній `diff`. Якщо в account ще немає `AWSServiceRoleForAmazonEKSNodegroup`, створіть її командою `aws iam create-service-linked-role --aws-service-name eks-nodegroup.amazonaws.com`. Потім створіть VPC, ECR і EKS з node group. На цьому кроці план має залишити обидва CI-сервіси вимкненими.
+
+```bash
+terraform apply -var='enable_jenkins=false' -var='enable_argo_cd=false' \
+  -var='enable_django_application=false'
+```
 
 ## 4. Підключитися до EKS та встановити add-ons
 
@@ -153,7 +178,11 @@ helm upgrade --install aws-ebs-csi-driver aws-ebs-csi-driver/aws-ebs-csi-driver 
   --wait --timeout 10m
 helm upgrade --install metrics-server metrics-server/metrics-server \
   --kube-context "$CLUSTER_NAME" --namespace kube-system --version 3.14.0 --wait --timeout 10m
+kubectl --context "$CLUSTER_NAME" get nodes
+kubectl --context "$CLUSTER_NAME" -n kube-system get pods
 ```
+
+Для нового середовища очікуються три вузли `Ready` і готові pods AWS Load Balancer Controller, EBS CSI та Metrics Server.
 
 ### Встановити Jenkins
 
@@ -165,7 +194,7 @@ terraform apply
 kubectl --context "$CLUSTER_NAME" -n jenkins get sts,pvc
 ```
 
-Отримайте ім’я адміністратора та випадковий пароль з Kubernetes Secret у приватному terminal. Запустіть port-forward і відкрийте `http://localhost:8080`.
+Отримайте ім’я адміністратора та випадковий пароль з Kubernetes Secret у приватному terminal. Запустіть port-forward в окремій вкладці й відкрийте `http://localhost:8080`. Для port-forward Jenkins і Argo CD у нових вкладках задайте ті самі `AWS_PROFILE`, `AWS_REGION` і `CLUSTER_NAME`, що й в основному terminal.
 
 ```bash
 kubectl --context "$CLUSTER_NAME" -n jenkins get secret jenkins \
@@ -177,11 +206,38 @@ printf '\n'
 kubectl --context "$CLUSTER_NAME" -n jenkins port-forward service/jenkins 8080:8080
 ```
 
-Jenkins controller зберігає конфігурацію на EBS PVC. Для pipeline використовується label `kaniko` і контейнери `git`, `kaniko` (`/busybox/sh`) та `jnlp` зі спільним workspace. Тимчасові AWS credentials від IRSA отримує контейнер `kaniko`, де їх використовує вбудований ECR credential helper.
+Очікуються Jenkins StatefulSet `1/1` і PVC `Bound`. Jenkins controller зберігає конфігурацію на EBS PVC. Pipeline використовує label `kaniko` і контейнери `git`, `kaniko` та `jnlp` зі спільним workspace. Kaniko отримує тимчасові AWS credentials через IRSA для ECR credential helper.
 
 Для читання публічного HW-02 автентифікація Git не потрібна. Якщо HW-02 стане приватним, створіть credential `github-hw02-read` із правом читання та вкажіть його `credentialsId` у checkout HW-02. Для оновлення HW-05 додайте в Jenkins Credentials тип `Username with password` під ID `github-hw05-write`. Вкажіть GitHub username та token з `Contents: Read and write` лише для HW-05. Перед запуском перевірте, що його власник може пушити в цільову гілку. Облікові дані зберігаються у Jenkins.
 
-## 5. Перший запуск через GitOps
+### Встановити Argo CD
+
+Увімкніть Argo CD в тому самому Terraform state. Для першого розгортання залиште `enable_django_application=false`, доки Jenkins не опублікує перший образ і відповідний Git commit.
+
+```bash
+export TF_VAR_enable_argo_cd=true
+terraform apply -var='enable_django_application=false'
+kubectl --context "$CLUSTER_NAME" wait --for=condition=Established \
+  crd/applications.argoproj.io --timeout=2m
+kubectl --context "$CLUSTER_NAME" -n argocd get pods
+```
+
+Очікуються CRD `Established` і готові pods Argo CD server, application controller, repo server і Redis.
+
+Отримайте початковий пароль у приватному terminal. В окремій вкладці запустіть port-forward з тим самим AWS profile і назвою кластера. Відкрийте `https://localhost:8081` і ввійдіть як `admin`. За типової конфігурації сервер використовує самопідписаний TLS-сертифікат. [Перший вхід в Argo CD](https://argo-cd.readthedocs.io/en/stable/getting_started/).
+
+```bash
+kubectl --context "$CLUSTER_NAME" -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath='{.data.password}' | base64 -d
+printf '\n'
+kubectl --context "$CLUSTER_NAME" -n argocd port-forward service/argocd-server 8081:443
+```
+
+Публічний HW-05 доступний Argo CD без credentials. Для приватного HW-05 відкрийте **Settings → Repositories → Connect Repo**, виберіть HTTPS, проєкт `default` і підключіть `https://github.com/IegorOrlov/goit-dev-ops-hw-05.git` з GitHub username і token із правом `Contents: Read`. Очікується статус підключення `Successful`. [Приватні репозиторії в Argo CD](https://argo-cd.readthedocs.io/en/stable/user-guide/private-repositories/).
+
+## 5. Запустити CI/CD і перевірити демонстрацію
+
+### Перший образ
 
 До налаштування job опублікуйте гілку `lesson-8-9` з `Jenkinsfile` і `charts/django-app/values.yaml` у HW-05. У Jenkins створіть **Pipeline** з **Pipeline script from SCM**, SCM **Git**, URL `https://github.com/IegorOrlov/goit-dev-ops-hw-05.git`, credential `github-hw05-write`, однією гілкою `refs/heads/lesson-8-9`, шляхом `Jenkinsfile` та увімкненим **Lightweight checkout**.
 
@@ -189,15 +245,52 @@ Jenkins controller зберігає конфігурацію на EBS PVC. Дл�
 
 Terraform передає ECR URL агенту. Після успішного push Kaniko Jenkins записує `image.repository` і `image.tag` в один commit у цільовій гілці. Тег складається зі скороченого SHA джерела та номера Jenkins build. Новий build публікує новий тег. Якщо обидва значення вже відповідають образу цього build, оновлення пропускає commit. Помилка Kaniko зупиняє pipeline до оновлення чарта. Якщо Git push відхилено, перевірте права або зміни цільової гілки та запустіть job повторно.
 
-Створюйте Argo CD `Application` після того, як Jenkins запише опублікований образ у `charts/django-app/values.yaml` у гілці `lesson-8-9`. За замовчуванням `GITOPS_BRANCH` у `Jenkinsfile` і `gitops_branch` у Terraform вказують на `lesson-8-9`. Для іншої цільової гілки змініть обидва значення.
+### Application і перевірка першого sync
+
+Після `SUCCESS` у Jenkins звірте останній коміт гілки, поля `image` та наявність тега в ECR. У виводі останньої команди очікується `imageDigest`.
+
+```bash
+git fetch "$HW05_URL" refs/heads/lesson-8-9
+GITOPS_REV="$(git rev-parse FETCH_HEAD)"
+git show --stat --oneline "$GITOPS_REV"
+VALUES="$(git show "$GITOPS_REV:charts/django-app/values.yaml" | sed -n '/^image:/,/^[[:space:]]*$/p')"
+printf '%s\n' "$VALUES"
+IMAGE_REPOSITORY="$(printf '%s\n' "$VALUES" | awk '$1 == "repository:" {print $2}')"
+IMAGE_TAG="$(printf '%s\n' "$VALUES" | awk '$1 == "tag:" {print $2}')"
+test "$IMAGE_REPOSITORY" = "$ECR_URL"
+aws ecr describe-images --repository-name "$ECR_NAME" --image-ids imageTag="$IMAGE_TAG" \
+  --query 'imageDetails[0].imageDigest' --output text
+```
+
+Після перевірки образу створіть `Application` через Terraform. `GITOPS_BRANCH` у Jenkins і `gitops_branch` у Terraform мають збігатися. За замовчуванням обидва використовують `lesson-8-9`. Argo CD читає `charts/django-app`, автоматично створює namespace `django` і синхронізує chart у поточний кластер.
+
+```bash
+export TF_VAR_enable_django_application=true
+terraform apply
+export ARGOCD_NAMESPACE=argocd
+export APP_NAME=django-app
+export NAMESPACE=django
+export RELEASE=django-app
+```
 
 Під час повного sync Argo CD спочатку застосовує ConfigMap і ресурси PostgreSQL, включно з EBS PVC, та чекає готовності БД. Потім Job запускає `python manage.py migrate --noinput` з тим самим образом і ConfigMap, що й Django Deployment. Після успіху Argo CD застосовує Django Deployment, HPA і публічний NLB Service.
 
 Для навчального демо `config.ALLOWED_HOSTS` має значення `"*"`, щоб Django приймав HTTP-запити на DNS-ім’я або IPv4 нового NLB відразу після його появи. Якщо є заздалегідь відоме DNS-ім’я, у Git можна задати його або список імен через кому.
 
-Після синхронізації встановіть `NAMESPACE` і `RELEASE` за конфігурацією `Application` та перевірте HTTP через hostname NLB.
+Дочекайтеся `Synced` і `Healthy` для Git SHA, перевірте rollout, образ і HTTP через hostname NLB. PostgreSQL PVC має бути `Bound`, а HPA після отримання метрик має показати CPU utilization. У Jenkins і Argo CD збережіть номер build і синхронізовану ревізію для демонстрації.
 
 ```bash
+kubectl --context "$CLUSTER_NAME" -n "$ARGOCD_NAMESPACE" wait application/"$APP_NAME" \
+  --for=jsonpath='{.status.sync.revision}'="$GITOPS_REV" --timeout=10m
+kubectl --context "$CLUSTER_NAME" -n "$ARGOCD_NAMESPACE" wait application/"$APP_NAME" \
+  --for=jsonpath='{.status.sync.status}'=Synced --timeout=15m
+kubectl --context "$CLUSTER_NAME" -n "$ARGOCD_NAMESPACE" wait application/"$APP_NAME" \
+  --for=jsonpath='{.status.health.status}'=Healthy --timeout=15m
+kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" rollout status deployment/"$RELEASE-django" --timeout=5m
+DEPLOYED_IMAGE="$(kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get deployment "$RELEASE-django" \
+  -o jsonpath='{.spec.template.spec.containers[?(@.name=="django")].image}')"
+test "$DEPLOYED_IMAGE" = "$ECR_URL:$IMAGE_TAG"
+kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get deployments,pods,pvc,hpa
 kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" wait \
   --for=jsonpath='{.status.loadBalancer.ingress[0].hostname}' service/"$RELEASE-django" --timeout=5m
 NLB_DNS="$(kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get service "$RELEASE-django" \
@@ -208,37 +301,64 @@ curl --fail --max-time 10 --retry 12 --retry-all-errors --retry-delay 10 --outpu
 
 Очікувана відповідь Django — HTTP `200`.
 
-## 6. Видалити застосунок, NLB і PostgreSQL volume
+### Автоматичний запуск після зміни HW-02
 
-Збережіть IDs до видалення. Підставте namespace Argo CD та назву `Application` у `ARGOCD_NAMESPACE` і `APP_NAME`. `Application` має містити finalizer `resources-finalizer.argocd.argoproj.io` для каскадного видалення ресурсів Django. Argo CD, AWS Load Balancer Controller та EBS CSI мають працювати до завершення cleanup NLB/EBS. Після частково невдалого deployment видаляйте фактично створені ресурси, пропускаючи команди з відсутніми IDs.
+1. Збережіть номер першого build, `IMAGE_TAG` і `GITOPS_REV` як початкові значення. Перевірте в **Polling Log**, що після щонайменше двох циклів опитування коміт Jenkins у HW-05 не спричинив нового build.
+2. У checkout HW-02 опублікуйте погоджену зміну у `lesson-4` і зафіксуйте SHA. У Jenkins дочекайтеся автоматичного build із причиною **Started by an SCM change**. Звірте SHA checkout у **Console Output** і успіх публікації Kaniko та запису в Git.
+3. Повторіть блок перевірки Git commit і ECR та блок перевірки sync, rollout і HTTP. Новий тег має починатися з 12 символів SHA зміни HW-02 і завершуватися номером нового build. `GITOPS_REV` має відрізнятися від попереднього, а Deployment має використовувати новий тег.
+4. Після щонайменше двох наступних циклів у **Polling Log** має бути опитування лише HW-02 без виявлених змін. Історія Jenkins не має містити додаткового build від коміту тегу в HW-05.
+
+## 6. Видалити застосунок і CI-сервіси
+
+Зупиніть нові build через **Disable Project** у Jenkins і дочекайтеся завершення активного build. Виконуйте cleanup лише для ресурсів цього демо. Для часткового розгортання пропустіть кроки для відсутніх ресурсів. Збережіть IDs, поки EKS API та контролери доступні.
 
 ```bash
 terraform state pull > "$BACKUP_DIR/before-cleanup.tfstate"
 terraform output -json > "$BACKUP_DIR/outputs.json"
+NAT_ID="$(terraform output -raw nat_gateway_id)"
+NAT_EIP_ID="$(aws ec2 describe-nat-gateways --nat-gateway-ids "$NAT_ID" \
+  --query 'NatGateways[0].NatGatewayAddresses[0].AllocationId' --output text)"
+OIDC_ISSUER="$(aws eks describe-cluster --name "$CLUSTER_NAME" --query cluster.identity.oidc.issuer --output text)"
+OIDC_PROVIDER_ARN="arn:aws:iam::$ACCOUNT_ID:oidc-provider/${OIDC_ISSUER#https://}"
+aws ec2 describe-instances --filters "Name=vpc-id,Values=$VPC_ID" \
+  --query 'Reservations[].Instances[].BlockDeviceMappings[].Ebs.VolumeId' \
+  --output text | tr '\t' '\n' > "$BACKUP_DIR/volume-ids.txt"
+printf '%s\n' "$NAT_EIP_ID" "$OIDC_PROVIDER_ARN" > "$BACKUP_DIR/resource-ids.txt"
+```
+
+### Django, NLB і PostgreSQL
+
+Якщо `Application` створено, використайте значення `ARGOCD_NAMESPACE=argocd`, `APP_NAME=django-app`, `NAMESPACE=django` і `RELEASE=django-app` з пункту 5. Зберіть IDs наявних NLB, target group та EBS volume.
+
+```bash
 export NLB_DNS="$(kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get service "$RELEASE-django" \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
 export NLB_NAME="$(python3 -c 'import sys; print(sys.argv[1].split(".")[0].rsplit("-",1)[0])' "$NLB_DNS")"
 export TARGET_GROUP_ARN="$(kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get targetgroupbindings \
-  -o jsonpath='{.items[0].spec.targetGroupARN}')"
+  -o "jsonpath={.items[?(@.spec.serviceRef.name==\"$RELEASE-django\")].spec.targetGroupARN}")"
 export PV_NAME="$(kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get pvc "$RELEASE-postgres" -o jsonpath='{.spec.volumeName}')"
 export DB_VOLUME_ID="$(kubectl --context "$CLUSTER_NAME" get pv "$PV_NAME" -o jsonpath='{.spec.csi.volumeHandle}')"
-export OIDC_ISSUER="$(aws eks describe-cluster --name "$CLUSTER_NAME" --query cluster.identity.oidc.issuer --output text)"
-export OIDC_PROVIDER_ARN="arn:aws:iam::$ACCOUNT_ID:oidc-provider/${OIDC_ISSUER#https://}"
-aws ec2 describe-instances --filters "Name=vpc-id,Values=$VPC_ID" \
-  --query 'Reservations[].Instances[].BlockDeviceMappings[].Ebs.VolumeId' \
-  --output text | tr '\t' '\n' > "$BACKUP_DIR/volume-ids.txt"
 printf '%s\n' "$DB_VOLUME_ID" >> "$BACKUP_DIR/volume-ids.txt"
-printf '%s\n' "$NLB_NAME" "$TARGET_GROUP_ARN" "$DB_VOLUME_ID" "$OIDC_PROVIDER_ARN" > "$BACKUP_DIR/resource-ids.txt"
-kubectl --context "$CLUSTER_NAME" -n "$ARGOCD_NAMESPACE" delete application "$APP_NAME" \
-  --cascade=foreground --ignore-not-found --wait=true --timeout=10m
+printf '%s\n' "$NLB_NAME" "$TARGET_GROUP_ARN" "$DB_VOLUME_ID" >> "$BACKUP_DIR/resource-ids.txt"
+```
+
+Вимкніть лише `Application` у Terraform. Переконайтеся за планом, що Argo CD і EKS залишаються доступними. Finalizer `resources-finalizer.argocd.argoproj.io` забезпечує каскадне видалення ресурсів Django.
+
+```bash
+export TF_VAR_enable_django_application=false
+terraform apply
+kubectl --context "$CLUSTER_NAME" -n "$ARGOCD_NAMESPACE" wait --for=delete application/"$APP_NAME" --timeout=15m
+kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get svc,pvc,deploy,job
 kubectl --context "$CLUSTER_NAME" wait --for=delete pv/"$PV_NAME" --timeout=10m
 ```
 
-Каскадне видалення `Application` очікує видалення його ресурсів, включно із Service з controller finalizer. Видалення PV підтверджує завершення CSI reclaim. Якщо PV вже відсутній, відповідь `NotFound` для його точного імені означає, що перевірку Kubernetes завершено. Перед видаленням EKS адміністратор у **EC2 Console**, Region **Oregon / us-west-2**, перевіряє відсутність NLB `$NLB_NAME` у **Load Balancers**, його target group зі збереженим ARN у **Target Groups** та PostgreSQL volume `$DB_VOLUME_ID` у **Volumes**. За затримки дочекайтеся видалення, зберігаючи controllers запущеними. Add-ons і namespace видаляться разом із EKS під час `terraform destroy`.
+Очікується, що `Application`, його Service, Deployment, PVC і PV видалено. Якщо після часткового sync лишився Job міграцій цього демо, видаліть `job/$RELEASE-migrate` у namespace `django`. Перед видаленням EKS адміністратор у **EC2 Console**, Region **Oregon / us-west-2**, перевіряє відсутність NLB `$NLB_NAME` у **Load Balancers**, його target group у **Target Groups** та PostgreSQL volume `$DB_VOLUME_ID` у **Volumes**. За затримки дочекайтеся видалення, зберігаючи Argo CD, AWS Load Balancer Controller та EBS CSI запущеними.
 
 Для цих Console-перевірок увійдіть під адміністратором у той самий AWS account. Користувач `terraform-student` не має, зокрема, `elasticloadbalancing:DescribeLoadBalancers` та `ec2:DescribeVolumes`; Console під цим користувачем також не покаже ресурси. `AccessDenied` не підтверджує їх відсутність. Розширювати права `terraform-student` для cleanup не потрібно.
 
-Якщо Jenkins встановлено, дочекайтеся завершення активної збірки й видаліть його через той самий Terraform state, доки доступні EKS API та EBS CSI. Спочатку збережіть ім’я PV та ID диска для перевірки в AWS Console. Видалення релізу також видаляє Jenkins PVC і дані на ньому.
+### Jenkins і Argo CD
+
+Якщо Jenkins встановлено, збережіть ім’я PV та ID диска. Видалення релізу видаляє Jenkins PVC і дані на ньому.
 
 ```bash
 JENKINS_PV="$(kubectl --context "$CLUSTER_NAME" -n jenkins get pvc jenkins \
@@ -246,24 +366,33 @@ JENKINS_PV="$(kubectl --context "$CLUSTER_NAME" -n jenkins get pvc jenkins \
 JENKINS_VOLUME_ID="$(kubectl --context "$CLUSTER_NAME" get pv "$JENKINS_PV" \
   -o jsonpath='{.spec.csi.volumeHandle}')"
 printf '%s\n' "$JENKINS_VOLUME_ID" >> "$BACKUP_DIR/volume-ids.txt"
-unset TF_VAR_enable_jenkins
-terraform apply -var='enable_jenkins=false'
+```
+
+Після перевірки cleanup Django вимкніть Jenkins і Argo CD через Terraform, поки доступні EKS API та EBS CSI. План має видаляти релізи й IAM role Jenkins agent.
+
+```bash
+export TF_VAR_enable_jenkins=false
+export TF_VAR_enable_argo_cd=false
+export TF_VAR_enable_django_application=false
+terraform apply
+kubectl --context "$CLUSTER_NAME" -n jenkins wait --for=delete pvc/jenkins --timeout=10m
 kubectl --context "$CLUSTER_NAME" wait --for=delete pv/"$JENKINS_PV" --timeout=10m
 ```
 
-Якщо PV вже відсутній, `NotFound` для його імені підтверджує завершення перевірки Kubernetes. Перевірте видалення Jenkins volume за збереженим ID у **EC2 Console → Volumes** перед видаленням EKS.
+Якщо PV уже відсутній, `NotFound` для його імені підтверджує завершення перевірки Kubernetes. Перевірте видалення Jenkins volume за збереженим ID у **EC2 Console → Volumes** перед видаленням EKS. Add-ons і namespace видаляться разом із кластером.
 
 ## 7. Очистити ECR та перенести state локально
 
-У **AWS Console**, Region **Oregon / us-west-2**, відкрийте **ECR → Private repositories → lesson-5-ecr → Images**. Видаліть усі tagged та untagged images. Якщо image використовується manifest index, спочатку видаліть index. Repository видалить Terraform. Перевірка має повернути `[]`.
+Для окремого репозиторію демо відкрийте **AWS Console → ECR → Private repositories → lesson-5-ecr → Images** у регіоні `us-west-2`. Видаліть усі tagged та untagged images. Якщо image використовується manifest index, спочатку видаліть index. Repository видалить Terraform. Перевірка має повернути `[]`. Якщо ECR або backend спільні, збережіть їх і погодьте окремий обсяг destroy перед наступними кроками.
 
 ```bash
-aws ecr list-images --repository-name "$ECR_NAME" --query imageIds
+aws ecr list-images --repository-name "$ECR_NAME" --query imageIds --output json
 ```
 
-Поки S3 backend ще активний, збережіть список ресурсів:
+Поки S3 backend ще активний, збережіть актуальний state і список ресурсів.
 
 ```bash
+terraform state pull > "$BACKUP_DIR/before-local.tfstate"
 terraform state list > "$BACKUP_DIR/before-local.txt"
 ```
 
@@ -300,7 +429,7 @@ aws s3api head-bucket --bucket "$STATE_BUCKET"
 aws dynamodb describe-table --table-name "$LOCK_TABLE"
 aws ec2 describe-vpcs --filters "Name=vpc-id,Values=$VPC_ID"
 aws ec2 describe-nat-gateways --filter "Name=vpc-id,Values=$VPC_ID" --query 'NatGateways[?State!=`deleted`]'
-aws ec2 describe-addresses --filters Name=tag:Project,Values=goit-dev-ops-hw-04
+aws ec2 describe-addresses --allocation-ids "$NAT_EIP_ID"
 for role_suffix in cluster node load-balancer ebs-csi jenkins-agent; do
   aws iam get-role --role-name "$CLUSTER_NAME-$role_suffix"
 done
