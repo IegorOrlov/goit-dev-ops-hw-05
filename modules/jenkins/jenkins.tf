@@ -48,6 +48,12 @@ resource "helm_release" "jenkins" {
   values = [
     file("${path.module}/values.yaml"),
     yamlencode({
+      agent = {
+        envVars = [{
+          name  = "ECR_REPOSITORY_URL"
+          value = var.ecr_repository_url
+        }]
+      }
       serviceAccountAgent = {
         name = local.agent_service_account
         annotations = {

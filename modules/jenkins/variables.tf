@@ -17,3 +17,8 @@ variable "agent_ecr_policy_arn" {
   description = "ARN адміністраторської ECR policy для agent role та її permissions boundary"
   type        = string
 }
+
+variable "ecr_repository_url" {
+  description = "URL ECR repository для публікації образів з Jenkins"
+  type        = string
+}

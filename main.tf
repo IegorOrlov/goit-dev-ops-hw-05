@@ -40,6 +40,7 @@ module "jenkins" {
   oidc_provider_arn    = module.eks.oidc_provider_arn
   oidc_provider_url    = module.eks.oidc_provider_url
   agent_ecr_policy_arn = "arn:aws:iam::${module.eks.account_id}:policy/${module.eks.cluster_name}-jenkins-agent-ecr"
+  ecr_repository_url   = module.ecr.repository_url
 
   depends_on = [module.eks, module.ecr]
 }
