@@ -31,6 +31,7 @@ agent:
     limits:
       cpu: 500m
       memory: 512Mi
+  # Kubernetes plugin додає agent.envVars у контейнери з PodTemplate. Контейнери з yamlTemplate задають env явно.
   yamlTemplate: |
     apiVersion: v1
     kind: Pod
@@ -46,6 +47,13 @@ agent:
           image: alpine/git:v2.52.0
           workingDir: /home/jenkins/agent
           command: ["/bin/sh", "-c", "sleep 99d"]
+          {{- with .Values.agent.envVars }}
+          env:
+            {{- range . }}
+            - name: {{ .name }}
+              value: {{ tpl .value $ | quote }}
+            {{- end }}
+          {{- end }}
           resources:
             requests:
               cpu: 50m
@@ -62,6 +70,10 @@ agent:
               value: "true"
             - name: AWS_EC2_METADATA_DISABLED
               value: "true"
+            {{- range .Values.agent.envVars }}
+            - name: {{ .name }}
+              value: {{ tpl .value $ | quote }}
+            {{- end }}
           resources:
             requests:
               cpu: 250m

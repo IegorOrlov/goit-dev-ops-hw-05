@@ -96,7 +96,7 @@ resource "aws_iam_role_policy_attachment" "node" {
   policy_arn = "arn:aws:iam::aws:policy/${each.value}"
 }
 
-# Три t3.small забезпечують запас пам’яті для CI/CD і сумісні з обмеженням Free Tier account.
+# Четвертий t3.small дає місце для Jenkins agent після розгортання Django.
 resource "aws_eks_node_group" "main" {
   cluster_name    = aws_eks_cluster.main.name
   node_group_name = "demo"
@@ -109,9 +109,9 @@ resource "aws_eks_node_group" "main" {
   disk_size       = 20
 
   scaling_config {
-    desired_size = 3
-    min_size     = 3
-    max_size     = 3
+    desired_size = 4
+    min_size     = 4
+    max_size     = 4
   }
 
   update_config {
