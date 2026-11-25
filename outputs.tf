@@ -47,6 +47,16 @@ output "cluster_name" {
   value = module.eks.cluster_name
 }
 
+output "jenkins_admin_password_command" {
+  description = "Команда для отримання початкового пароля Jenkins після встановлення"
+  value       = one(module.jenkins[*].admin_password_command)
+}
+
+output "argocd_admin_password_command" {
+  description = "Команда для отримання початкового пароля Argo CD після встановлення"
+  value       = one(module.argo_cd[*].admin_password_command)
+}
+
 output "kubernetes_version" {
   value = module.eks.kubernetes_version
 }

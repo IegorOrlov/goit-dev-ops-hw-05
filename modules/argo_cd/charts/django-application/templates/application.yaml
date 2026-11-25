@@ -13,6 +13,7 @@ spec:
     {{- toYaml .Values.destination | nindent 4 }}
   syncPolicy:
     automated:
+      prune: true
       selfHeal: true
     syncOptions:
       - CreateNamespace=true

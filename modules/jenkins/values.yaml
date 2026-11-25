@@ -13,6 +13,72 @@ controller:
   sidecars:
     configAutoReload:
       enabled: false
+  installPlugins:
+    - kubernetes:4560.vc25b_83890c34
+    - workflow-aggregator:608.v67378e9d3db_1
+    - git:5.11.0
+    # Ця версія JCasC містить виправлення SECURITY-4429.
+    - configuration-as-code:2148.v9d0c041b_a_13c
+  additionalPlugins:
+    - job-dsl:3752.vb_199526b_20c3
+  additionalExistingSecrets:
+    - name: jenkins-github
+      keyName: username
+    - name: jenkins-github
+      keyName: token
+  JCasC:
+    configScripts:
+      github-credentials: |
+        credentials:
+          system:
+            domainCredentials:
+              - credentials:
+                  - usernamePassword:
+                      scope: GLOBAL
+                      id: github-hw05-write
+                      username: "${jenkins-github-username}"
+                      password: "${jenkins-github-token}"
+      django-pipeline: |
+        jobs:
+          - script: |
+              pipelineJob('django-ci') {
+                // Налаштування Jenkinsfile, потрібні також до першої збірки та після рестарту.
+                properties {
+                  disableConcurrentBuilds()
+                  parameters {
+                    parameterDefinitions {
+                      string {
+                        name('GITOPS_BRANCH')
+                        defaultValue('lesson-8-9')
+                        description('Гілка HW-05, яку відстежує Argo CD')
+                        trim(true)
+                      }
+                    }
+                  }
+                  pipelineTriggers {
+                    triggers {
+                      pollSCM {
+                        scmpoll_spec('* * * * *')
+                      }
+                    }
+                  }
+                }
+                definition {
+                  cpsScm {
+                    scm {
+                      git {
+                        remote {
+                          url('https://github.com/IegorOrlov/goit-dev-ops-hw-05.git')
+                          credentials('github-hw05-write')
+                        }
+                        branch('refs/heads/lesson-8-9')
+                      }
+                    }
+                    scriptPath('Jenkinsfile')
+                    lightweight()
+                  }
+                }
+              }
 
 agent:
   podName: kaniko

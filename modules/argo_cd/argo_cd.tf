@@ -1,11 +1,3 @@
-terraform {
-  required_providers {
-    helm = {
-      source = "hashicorp/helm"
-    }
-  }
-}
-
 resource "helm_release" "argo_cd" {
   name             = "argocd"
   namespace        = "argocd"

@@ -1,11 +1,3 @@
-terraform {
-  required_providers {
-    helm = {
-      source = "hashicorp/helm"
-    }
-  }
-}
-
 locals {
   namespace             = "jenkins"
   agent_service_account = "jenkins-agent"

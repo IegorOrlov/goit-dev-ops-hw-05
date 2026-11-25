@@ -188,11 +188,40 @@ kubectl --context "$CLUSTER_NAME" -n kube-system get pods
 
 Після `Ready` вузлів і готовності EBS CSI увімкніть Jenkins. Helm provider підключається до EKS API з CA кластера й отримує токен через `aws eks get-token`. Поки Jenkins має залишатись встановленим, використовуйте `TF_VAR_enable_jenkins=true` під час наступних Terraform apply.
 
+До встановлення Jenkins опублікуйте в HW-05 гілку `lesson-8-9` з `Jenkinsfile` і `charts/django-app/values.yaml`. JCasC одразу налаштовує Poll SCM, тому перша збірка може початися під час розгортання.
+
+Перед першим встановленням створіть namespace `jenkins` і Kubernetes Secret `jenkins-github`. Введіть GitHub username і token із правом `Contents: Read and write` лише для HW-05. Власник токена має мати право пушити в `lesson-8-9`. Термінал зчитує токен без відображення, а `kubectl` отримує його через stdin.
+
+```bash
+(
+  set +x
+  set -e -o pipefail
+  kubectl --context "$CLUSTER_NAME" create namespace jenkins --dry-run=client -o yaml |
+    kubectl --context "$CLUSTER_NAME" apply --server-side -f -
+
+  printf 'GitHub username: '
+  read -r GITHUB_USERNAME
+  printf 'GitHub token: '
+  read -rs GITHUB_TOKEN
+  printf '\n'
+  test -n "$GITHUB_USERNAME" && test -n "$GITHUB_TOKEN" || exit 1
+
+  printf '%s' "$GITHUB_TOKEN" |
+    kubectl --context "$CLUSTER_NAME" -n jenkins create secret generic jenkins-github \
+      --from-literal=username="$GITHUB_USERNAME" --from-file=token=/dev/stdin --dry-run=client -o yaml |
+    kubectl --context "$CLUSTER_NAME" -n jenkins apply --server-side -f -
+)
+```
+
+Повторні Terraform apply використовують цей Secret. Для ротації токена повторіть блок створення Secret і перезапустіть Jenkins controller через `kubectl --context "$CLUSTER_NAME" -n jenkins rollout restart statefulset/jenkins`. JCasC керує всім системним сховищем Jenkins Credentials. Перед оновленням наявного Jenkins перенесіть потрібні додаткові системні credentials у JCasC.
+
 ```bash
 export TF_VAR_enable_jenkins=true
 terraform apply
 kubectl --context "$CLUSTER_NAME" -n jenkins get sts,pvc
 ```
+
+Після встановлення `terraform output -raw jenkins_admin_password_command` виводить готову команду `kubectl` для отримання початкового пароля.
 
 Отримайте ім’я адміністратора та випадковий пароль з Kubernetes Secret у приватному terminal. Запустіть port-forward в окремій вкладці й відкрийте `http://localhost:8080`. Для port-forward Jenkins і Argo CD у нових вкладках задайте ті самі `AWS_PROFILE`, `AWS_REGION` і `CLUSTER_NAME`, що й в основному terminal.
 
@@ -208,7 +237,7 @@ kubectl --context "$CLUSTER_NAME" -n jenkins port-forward service/jenkins 8080:8
 
 Очікуються Jenkins StatefulSet `1/1` і PVC `Bound`. Jenkins controller зберігає конфігурацію на EBS PVC. Pipeline використовує label `kaniko` і контейнери `git`, `kaniko` та `jnlp` зі спільним workspace. Kaniko отримує тимчасові AWS credentials через IRSA для ECR credential helper.
 
-Для читання публічного HW-02 автентифікація Git не потрібна. Якщо HW-02 стане приватним, створіть credential `github-hw02-read` із правом читання та вкажіть його `credentialsId` у checkout HW-02. Для оновлення HW-05 додайте в Jenkins Credentials тип `Username with password` під ID `github-hw05-write`. Вкажіть GitHub username та token з `Contents: Read and write` лише для HW-05. Перед запуском перевірте, що його власник може пушити в цільову гілку. Облікові дані зберігаються у Jenkins.
+Під час старту JCasC створює або оновлює credential `github-hw05-write` типу **Username with password** і Pipeline job `django-ci`. Після входу перевірте наявність обох у Jenkins. Для читання публічного HW-02 автентифікація Git не потрібна. Якщо HW-02 стане приватним, додайте до JCasC credential `github-hw02-read` із правом читання та вкажіть його `credentialsId` у checkout HW-02.
 
 ### Встановити Argo CD
 
@@ -224,6 +253,8 @@ kubectl --context "$CLUSTER_NAME" -n argocd get pods
 
 Очікуються CRD `Established` і готові pods Argo CD server, application controller, repo server і Redis.
 
+Після встановлення `terraform output -raw argocd_admin_password_command` виводить готову команду `kubectl` для отримання початкового пароля.
+
 Отримайте початковий пароль у приватному terminal. В окремій вкладці запустіть port-forward з тим самим AWS profile і назвою кластера. Відкрийте `https://localhost:8081` і ввійдіть як `admin`. За типової конфігурації сервер використовує самопідписаний TLS-сертифікат. [Перший вхід в Argo CD](https://argo-cd.readthedocs.io/en/stable/getting_started/).
 
 ```bash
@@ -233,15 +264,15 @@ printf '\n'
 kubectl --context "$CLUSTER_NAME" -n argocd port-forward service/argocd-server 8081:443
 ```
 
-Публічний HW-05 доступний Argo CD без credentials. Для приватного HW-05 відкрийте **Settings → Repositories → Connect Repo**, виберіть HTTPS, проєкт `default` і підключіть `https://github.com/IegorOrlov/goit-dev-ops-hw-05.git` з GitHub username і token із правом `Contents: Read`. Очікується статус підключення `Successful`. [Приватні репозиторії в Argo CD](https://argo-cd.readthedocs.io/en/stable/user-guide/private-repositories/).
+Helm chart `django-application` реєструє Git-репозиторій у Argo CD під час створення `Application`. Публічний HW-05 доступний без credentials. Для приватного HW-05 перед створенням `Application` відкрийте **Settings → Repositories → Connect Repo**, виберіть HTTPS і введіть URL з `source.repoURL`, GitHub username та token із правом `Contents: Read`. Натисніть **Save as credential template**. Argo CD використає цей шаблон для URL репозиторію. Зберігайте token через Argo CD UI поза Git, Helm values і Terraform state. Після створення `Application` перевірте статус підключення `Successful`. [Шаблони credentials Argo CD](https://argo-cd.readthedocs.io/en/stable/user-guide/private-repositories/#credential-templates).
 
 ## 5. Запустити CI/CD і перевірити демонстрацію
 
 ### Перший образ
 
-До налаштування job опублікуйте гілку `lesson-8-9` з `Jenkinsfile` і `charts/django-app/values.yaml` у HW-05. У Jenkins створіть **Pipeline** з **Pipeline script from SCM**, SCM **Git**, URL `https://github.com/IegorOrlov/goit-dev-ops-hw-05.git`, credential `github-hw05-write`, однією гілкою `refs/heads/lesson-8-9`, шляхом `Jenkinsfile` та увімкненим **Lightweight checkout**.
+JCasC налаштовує `django-ci` як **Pipeline script from SCM** з **Lightweight checkout** для `Jenkinsfile` із `refs/heads/lesson-8-9` у HW-05. Після встановлення Jenkins перевірте історію та чергу `django-ci`. Перший цикл **Poll SCM** може сам запланувати збірку. Якщо першої збірки ще немає в історії та черзі, її можна запустити через **Build with Parameters** зі значенням `GITOPS_BRANCH=lesson-8-9`.
 
-Перший запуск через **Build Now** реєструє **Poll SCM** (`* * * * *`) і публікує перший образ. Для демо Jenkins опитує Git щохвилини. Це найкоротший інтервал у Jenkins cron. Jenkins завантажує `Jenkinsfile` через Lightweight checkout, а опитує Git plugin checkout гілки `refs/heads/lesson-4` з HW-02. У **Console Output** перевірте рядок `Obtained Jenkinsfile from git`, а в **Polling Log** перевірте, що Jenkins опитує тільки цю гілку HW-02. Коміт Jenkins у `lesson-8-9` підхоплює Argo CD. Наступну збірку запускає зміна в `lesson-4` у HW-02. [Jenkins SCM polling](https://github.com/jenkinsci/workflow-scm-step-plugin/blob/master/README.md), [синтаксис Jenkins cron](https://www.jenkins.io/doc/book/pipeline/syntax/#jenkins-cron-syntax).
+**Poll SCM** (`* * * * *`) працює щохвилини, що є найкоротшим інтервалом у Jenkins cron. Після першої успішної збірки Jenkins опитує Git plugin checkout гілки `refs/heads/lesson-4` з HW-02. У **Console Output** перевірте рядок `Obtained Jenkinsfile from git`, а в **Polling Log** перевірте, що Jenkins опитує тільки цю гілку HW-02. Коміт Jenkins у `lesson-8-9` підхоплює Argo CD. Наступну збірку запускає зміна в `lesson-4` у HW-02. Якщо змінюєте параметри job або розклад Poll SCM, оновіть їх і в JCasC, і в `Jenkinsfile`. [Jenkins SCM polling](https://github.com/jenkinsci/workflow-scm-step-plugin/blob/master/README.md), [синтаксис Jenkins cron](https://www.jenkins.io/doc/book/pipeline/syntax/#jenkins-cron-syntax).
 
 Terraform передає ECR URL агенту. Після успішного push Kaniko Jenkins записує `image.repository` і `image.tag` в один commit у цільовій гілці. Тег складається зі скороченого SHA джерела та номера Jenkins build. Новий build публікує новий тег. Якщо обидва значення вже відповідають образу цього build, оновлення пропускає commit. Помилка Kaniko зупиняє pipeline до оновлення чарта. Якщо Git push відхилено, перевірте права або зміни цільової гілки та запустіть job повторно.
 
@@ -262,7 +293,7 @@ aws ecr describe-images --repository-name "$ECR_NAME" --image-ids imageTag="$IMA
   --query 'imageDetails[0].imageDigest' --output text
 ```
 
-Після перевірки образу створіть `Application` через Terraform. `GITOPS_BRANCH` у Jenkins і `gitops_branch` у Terraform мають збігатися. За замовчуванням обидва використовують `lesson-8-9`. Argo CD читає `charts/django-app`, автоматично створює namespace `django` і синхронізує chart у поточний кластер.
+Після перевірки образу створіть `Application` через Terraform. `GITOPS_BRANCH` у Jenkins і `gitops_branch` у Terraform мають збігатися. За замовчуванням обидва використовують `lesson-8-9`. Argo CD читає `charts/django-app`, автоматично створює namespace `django` і синхронізує chart у поточний кластер. `prune: true` прибирає керовані ресурси, видалені з Git. Захист від автоматичного видалення всіх ресурсів застосунку залишається увімкненим за замовчуванням. [Автоматичний prune в Argo CD](https://argo-cd.readthedocs.io/en/stable/user-guide/auto_sync/#automatic-pruning).
 
 ```bash
 export TF_VAR_enable_django_application=true
