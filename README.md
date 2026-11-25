@@ -324,7 +324,26 @@ curl --fail --max-time 10 --retry 12 --retry-all-errors --retry-delay 10 --outpu
 
 ## 6. Видалити застосунок і CI-сервіси
 
-Зупиніть нові build через **Disable Project** у Jenkins і дочекайтеся завершення активного build. Виконуйте cleanup лише для ресурсів цього демо. Для часткового розгортання пропустіть кроки для відсутніх ресурсів. Збережіть IDs, поки EKS API та контролери доступні.
+Виконуйте cleanup із кореня репозиторію з тим самим S3 backend, що й під час розгортання. У новій сесії термінала відновіть параметри. Підставте той самий CIDR, який використали під час розгортання, і звірте AWS account та bucket із `backend.tf`. Якщо AWS-сесія завершилася, увійдіть за пунктом 2. У новій локальній копії після вибору AWS profile і region виконайте `terraform init` перед `terraform state list`.
+
+```bash
+export AWS_PROFILE=goit
+export AWS_REGION=us-west-2
+export ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+export TF_VAR_admin_principal_arn="arn:aws:iam::$ACCOUNT_ID:user/terraform-student"
+export TF_VAR_public_access_cidrs='["REPLACE_PUBLIC_IPV4/32"]'
+terraform state list
+export CLUSTER_NAME="$(terraform output -raw cluster_name)"
+export VPC_ID="$(terraform output -raw vpc_id)"
+export ECR_NAME="$(terraform output -raw ecr_repository_name)"
+export STATE_BUCKET="$(terraform output -raw s3_bucket_name)"
+export LOCK_TABLE="$(terraform output -raw dynamodb_table_name)"
+export TF_VAR_bucket_name="$STATE_BUCKET"
+umask 077
+export BACKUP_DIR="$(mktemp -d /tmp/goit-hw05-backup.XXXXXX)"
+```
+
+Якщо контекст `kubectl` відсутній, відновіть його командою `aws eks update-kubeconfig --name "$CLUSTER_NAME" --alias "$CLUSTER_NAME"`. Якщо Jenkins встановлено, зупиніть нові build через **Disable Project** і дочекайтеся завершення активного build. Виконуйте cleanup лише для ресурсів цього демо. Для часткового розгортання пропустіть кроки для відсутніх ресурсів. Збережіть IDs, поки EKS API та контролери доступні.
 
 ```bash
 terraform state pull > "$BACKUP_DIR/before-cleanup.tfstate"
@@ -342,9 +361,13 @@ printf '%s\n' "$NAT_EIP_ID" "$OIDC_PROVIDER_ARN" > "$BACKUP_DIR/resource-ids.txt
 
 ### Django, NLB і PostgreSQL
 
-Якщо `Application` створено, використайте значення `ARGOCD_NAMESPACE=argocd`, `APP_NAME=django-app`, `NAMESPACE=django` і `RELEASE=django-app` з пункту 5. Зберіть IDs наявних NLB, target group та EBS volume.
+Якщо `Application` створено, зберіть IDs наявних NLB, target group та EBS volume.
 
 ```bash
+export ARGOCD_NAMESPACE=argocd
+export APP_NAME=django-app
+export NAMESPACE=django
+export RELEASE=django-app
 export NLB_DNS="$(kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get service "$RELEASE-django" \
   -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')"
 export NLB_NAME="$(python3 -c 'import sys; print(sys.argv[1].split(".")[0].rsplit("-",1)[0])' "$NLB_DNS")"
@@ -356,11 +379,19 @@ printf '%s\n' "$DB_VOLUME_ID" >> "$BACKUP_DIR/volume-ids.txt"
 printf '%s\n' "$NLB_NAME" "$TARGET_GROUP_ARN" "$DB_VOLUME_ID" >> "$BACKUP_DIR/resource-ids.txt"
 ```
 
-Вимкніть лише `Application` у Terraform. Переконайтеся за планом, що Argo CD і EKS залишаються доступними. Finalizer `resources-finalizer.argocd.argoproj.io` забезпечує каскадне видалення ресурсів Django.
+Вимкніть лише `Application` у Terraform. Якщо релізу Jenkins немає у state, замініть `TF_VAR_enable_jenkins=true` на `TF_VAR_enable_jenkins=false` у цьому блоці.
 
 ```bash
+export TF_VAR_enable_jenkins=true
+export TF_VAR_enable_argo_cd=true
 export TF_VAR_enable_django_application=false
-terraform apply
+terraform plan -out="$BACKUP_DIR/remove-django.plan"
+```
+
+Застосуйте збережений план лише якщо він видаляє `module.argo_cd[0].helm_release.django_application[0]` і показує `0 to add, 0 to change, 1 to destroy`. Finalizer `resources-finalizer.argocd.argoproj.io` забезпечує каскадне видалення ресурсів Django.
+
+```bash
+terraform apply "$BACKUP_DIR/remove-django.plan"
 kubectl --context "$CLUSTER_NAME" -n "$ARGOCD_NAMESPACE" wait --for=delete application/"$APP_NAME" --timeout=15m
 kubectl --context "$CLUSTER_NAME" -n "$NAMESPACE" get svc,pvc,deploy,job
 kubectl --context "$CLUSTER_NAME" wait --for=delete pv/"$PV_NAME" --timeout=10m
